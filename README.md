@@ -80,25 +80,31 @@ $$\tau_{\text{弹簧}} = k \cdot q + b$$
 
 > **说明**：$b$ 的符号在左右腿间相反，是因为关节角度正方向的定义左右对称。
 
-#### 执行器网络集成
+#### 执行器模型
 
-弹簧模型已集成到 `MyDogSpringActuatorNetMLP`（位于 `source/robot_lab/robot_lab/assets/my_dog.py`），该类继承自 Isaac Lab 的 `ActuatorNetMLP`：
+My-Dog 使用基于神经网络的执行器模型 `MyDogSpringActuatorNetMLP`（位于 `source/robot_lab/robot_lab/assets/my_dog.py`），该类继承自 Isaac Lab 的 `ActuatorNetMLP`。
+
+与传统的 PD 控制器 + 直流电机模型不同，ActuatorNetMLP 是一个**训练好的 MLP 网络**，输入位置误差历史和速度历史，直接输出力矩。在此基础上叠加弹簧补偿：
 
 ```python
-# 在网络输出的基础上叠加弹簧力矩
+# MLP 网络输出力矩 + 弹簧补偿力矩
 spring_effort = k * joint_pos + b
 computed_effort = network_output + spring_effort
 ```
 
-可通过 `MyDogActuatorNetMLPCfg` 中的 `enable_calf_spring` 开关控制是否启用弹簧补偿。
+执行器配置参数（`MY_DOG_CFG`）：
 
-#### 自定义扭矩-转速包络
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `network_file` | `motor.pt` | 训练好的 MLP 网络权重 |
+| `enable_calf_spring` | `True` | 启用小腿弹簧补偿 |
+| `effort_limit` | 16.8 N·m | 力矩上限 |
+| `saturation_effort` | 16.8 N·m | 饱和力矩 |
+| `velocity_limit` | 32.5 rad/s | 速度上限 |
+| `input_order` | `pos_vel` | 输入顺序：位置误差→速度 |
+| `input_idx` | `[0, 1, 2]` | 使用最近 3 帧历史 |
 
-除弹簧模型外，还基于实测电机数据拟合了二次扭矩-转速包络（`QuadraticTorqueCurveDCMotor`），用于精确建模执行器的物理极限：
-
-$$T_q(n) = a n^2 + b n + c$$
-
-其中 $a = -0.000341$，$b = 0.064566$，$c = 13.605$（N·m），峰值扭矩点 $n_{\text{峰值}} \approx 94.6$ rpm。
+> **注意**：由于使用 ActuatorNetMLP 而非 PD 控制器，训练配置中已关闭 `randomize_actuator_gains` 随机化（ActuatorNet 不使用 stiffness/damping 参数）。
 
 #### 验证工具
 

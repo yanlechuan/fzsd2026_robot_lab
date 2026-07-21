@@ -151,14 +151,14 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.disable_zero_weight_rewards()
 
         # ------------------------------Terminations------------------------------
-        # self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name, ".*_hip"]
-        self.terminations.illegal_contact = None
+        self.terminations.illegal_contact.params["sensor_cfg"].body_names = [self.base_link_name, ".*_hip", ".*_thigh"]
+        # self.terminations.illegal_contact = None
 
         # ------------------------------Curriculums------------------------------
-        # self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
-        # self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.2, 1.0)
-        self.curriculum.command_levels_lin_vel = None
-        self.curriculum.command_levels_ang_vel = None
+        self.curriculum.command_levels_lin_vel.params["range_multiplier"] = (0.2, 1.0)
+        self.curriculum.command_levels_ang_vel.params["range_multiplier"] = (0.2, 1.0)
+        # self.curriculum.command_levels_lin_vel = None
+        # self.curriculum.command_levels_ang_vel = None
 
         # ------------------------------Commands------------------------------
         # self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "error-tracker"
+version = "0.1.0"
+description = "可扩展的错误日志追踪包 —— 将所有报错/异常按时间戳记录到 txt 文件"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+keywords = ["logging", "error-tracking", "debugging", "exception", "monitoring"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Logging",
+    "Topic :: Software Development :: Debuggers",
+]
+
+[project.urls]
+Homepage = "https://github.com/user/error-tracker"
+
+[tool.setuptools.packages.find]
+where = ["."]

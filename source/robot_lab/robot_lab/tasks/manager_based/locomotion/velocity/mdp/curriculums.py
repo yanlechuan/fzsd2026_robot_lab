@@ -23,7 +23,7 @@ def command_levels_lin_vel(
     env_ids: Sequence[int],
     reward_term_name: str,
     range_multiplier: Sequence[float] = (0.1, 1.0),
-) -> None:
+) -> torch.Tensor:
     """command_levels_lin_vel"""
     base_velocity_ranges = env.command_manager.get_term("base_velocity").cfg.ranges
     # Get original velocity ranges (ONLY ON FIRST EPISODE)
@@ -43,7 +43,7 @@ def command_levels_lin_vel(
     if env.common_step_counter % env.max_episode_length == 0:
         episode_sums = env.reward_manager._episode_sums[reward_term_name]
         reward_term_cfg = env.reward_manager.get_term_cfg(reward_term_name)
-        delta_command = torch.tensor([-0.1, 0.1], device=env.device)
+        delta_command = torch.tensor([-0.05, 0.05], device=env.device)
 
         # If the tracking reward is above 80% of the maximum, increase the range of commands
         if torch.mean(episode_sums[env_ids]) / env.max_episode_length_s > 0.8 * reward_term_cfg.weight:
@@ -66,7 +66,7 @@ def command_levels_ang_vel(
     env_ids: Sequence[int],
     reward_term_name: str,
     range_multiplier: Sequence[float] = (0.1, 1.0),
-) -> None:
+) -> torch.Tensor:
     """command_levels_ang_vel"""
     base_velocity_ranges = env.command_manager.get_term("base_velocity").cfg.ranges
     # Get original angular velocity ranges (ONLY ON FIRST EPISODE)
@@ -82,10 +82,10 @@ def command_levels_ang_vel(
     if env.common_step_counter % env.max_episode_length == 0:
         episode_sums = env.reward_manager._episode_sums[reward_term_name]
         reward_term_cfg = env.reward_manager.get_term_cfg(reward_term_name)
-        delta_command = torch.tensor([-0.1, 0.1], device=env.device)
+        delta_command = torch.tensor([-0.05, 0.05], device=env.device)
 
         # If the tracking reward is above 80% of the maximum, increase the range of commands
-        if torch.mean(episode_sums[env_ids]) / env.max_episode_length_s > 0.8 * reward_term_cfg.weight:
+        if torch.mean(episode_sums[env_ids]) / env.max_episode_length_s > 0.7 * reward_term_cfg.weight:
             new_ang_vel_z = torch.tensor(base_velocity_ranges.ang_vel_z, device=env.device) + delta_command
 
             # Clamp to ensure we don't exceed final ranges
@@ -95,3 +95,30 @@ def command_levels_ang_vel(
             base_velocity_ranges.ang_vel_z = new_ang_vel_z.tolist()
 
     return torch.tensor(base_velocity_ranges.ang_vel_z[1], device=env.device)
+
+
+def reward_weight_linear_schedule(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str,
+    initial_weight: float,
+    final_weight: float,
+    transition_steps: int,
+) -> torch.Tensor:
+    """Linearly schedule a reward term weight from initial to final over training steps.
+
+    The schedule uses ``env.common_step_counter`` and updates the term configuration in-place.
+    """
+    del env_ids  # Unused but kept for CurriculumTerm API compatibility.
+
+    if transition_steps <= 0:
+        progress = 1.0
+    else:
+        progress = min(float(env.common_step_counter) / float(transition_steps), 1.0)
+
+    current_weight = initial_weight + (final_weight - initial_weight) * progress
+
+    reward_term_cfg = env.reward_manager.get_term_cfg(reward_term_name)
+    reward_term_cfg.weight = current_weight
+
+    return torch.tensor(current_weight, device=env.device)

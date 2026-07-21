@@ -106,7 +106,7 @@ class CommandsCfg:
     base_velocity = mdp.UniformThresholdVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.02,
+        rel_standing_envs=0.03,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
@@ -137,7 +137,7 @@ class ObservationsCfg:
         # observation terms (order preserved)
         base_lin_vel = ObsTerm(
             func=mdp.base_lin_vel,
-            noise=Unoise(n_min=-0.1, n_max=0.1),
+            noise=Unoise(n_min=-0.15, n_max=0.15),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
@@ -371,6 +371,7 @@ class EventCfg:
     )
 
 
+
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
@@ -389,6 +390,17 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=""),
             "sensor_cfg": SceneEntityCfg("height_scanner_base"),
             "target_height": 0.0,
+        },
+    )
+    base_height_hold_time_bonus = RewTerm(
+        func=mdp.base_height_hold_time_bonus,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=""),
+            "sensor_cfg": SceneEntityCfg("height_scanner_base"),
+            "target_height": 0.0,
+            "tolerance": 0.001,
+            "hold_time_s": 1.0,
         },
     )
     body_lin_acc_l2 = RewTerm(
@@ -516,6 +528,14 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
+    non_foot_ground_contact = RewTerm(
+        func=mdp.non_foot_ground_contact,
+        weight=0.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
+            "threshold": 1.0,
+        },
+    )
     contact_forces = RewTerm(
         func=mdp.contact_forces,
         weight=0.0,
@@ -581,6 +601,17 @@ class RewardsCfg:
         },
     )
 
+    feet_all_contact_hold_without_cmd = RewTerm(
+        func=mdp.feet_all_contact_hold_without_cmd,
+        weight=0.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
+            "command_name": "base_velocity",
+            "hold_time_s": 0.5,
+            "command_threshold": 0.1,
+        },
+    )
+
     feet_stumble = RewTerm(
         func=mdp.feet_stumble,
         weight=0.0,
@@ -643,6 +674,16 @@ class RewardsCfg:
 
     upward = RewTerm(func=mdp.upward, weight=0.0)
 
+##新增奖励项
+# 约束机体姿态接近竖直/水平稳定
+    heading_alignment = RewTerm(
+        func=mdp.heading_alignment_penalty,
+        weight=0.0,           # 推荐默认值 -1.5 ~ -2.0，保守一点
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+
 
 @configclass
 class TerminationsCfg:
@@ -667,8 +708,6 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
 
     command_levels_lin_vel = CurrTerm(
         func=mdp.command_levels_lin_vel,
@@ -741,3 +780,7 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
                 reward_attr = getattr(self.rewards, attr)
                 if not callable(reward_attr) and reward_attr.weight == 0:
                     setattr(self.rewards, attr, None)
+
+
+
+

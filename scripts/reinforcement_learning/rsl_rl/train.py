@@ -13,8 +13,13 @@
 import argparse
 import sys
 
-from isaaclab.app import AppLauncher
+# 接入 error_tracker 错误日志
+sys.path.insert(0, "scripts/tools/error_tracker")
+import error_tracker
+error_tracker.setup("logs")
 
+
+from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
@@ -85,7 +90,7 @@ from datetime import datetime
 
 import gymnasium as gym
 import torch
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner 
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -97,7 +102,7 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg # handle_deprecated_rsl_rl_cfg兼容新版 rsl-rl-lib >=4.x
 
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
@@ -124,7 +129,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
-
+    # === 新增这两行（处理弃用配置）===
+    # handle deprecated configurations（兼容新版 rsl-rl-lib >=4.x）
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -172,7 +179,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-
+    
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -194,6 +201,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     start_time = time.time()
+
+    # save unwrapped gym env reference for curriculum check (VecEnv wrapper loses access)
+    gym_env = env
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
@@ -217,8 +227,107 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    # run training
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    # run training with curriculum-aware auto-stop
+    # ------------------------------------------------------------------
+    # 自定义训练循环：当课程学习 (command_levels) 达到 1.0 时，
+    # 自动将 max_iterations 调整为 "课程完成轮数 × 2"
+    # ------------------------------------------------------------------
+    # Randomize initial episode lengths (for exploration)
+    env.episode_length_buf = torch.randint_like(
+        env.episode_length_buf, high=int(env.max_episode_length)
+    )
+
+    obs = env.get_observations().to(agent_cfg.device)
+    runner.alg.train_mode()
+
+    if getattr(runner, "is_distributed", False):
+        runner.alg.broadcast_parameters()
+
+    runner.logger.init_logging_writer()
+
+    curriculum_done_iteration = None
+    start_it = runner.current_learning_iteration
+    total_it = start_it + agent_cfg.max_iterations
+
+    for it in range(start_it, total_it):
+        start = time.time()
+        # Rollout
+        with torch.inference_mode():
+            for _ in range(agent_cfg.num_steps_per_env):
+                actions = runner.alg.act(obs)
+                obs, rewards, dones, extras = env.step(actions.to(env.device))
+                if getattr(agent_cfg, "check_for_nan", True):
+                    from rsl_rl.utils import check_nan
+
+                    check_nan(obs, rewards, dones)
+                obs, rewards, dones = (
+                    obs.to(agent_cfg.device),
+                    rewards.to(agent_cfg.device),
+                    dones.to(agent_cfg.device),
+                )
+                runner.alg.process_env_step(obs, rewards, dones, extras)
+                intrinsic_rewards = (
+                    runner.alg.intrinsic_rewards
+                    if getattr(agent_cfg.algorithm, "rnd_cfg", None)
+                    else None
+                )
+                runner.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+
+            stop = time.time()
+            collect_time = stop - start
+            start = stop
+            runner.alg.compute_returns(obs)
+
+        # Update policy
+        loss_dict = runner.alg.update()
+        stop = time.time()
+        learn_time = stop - start
+        runner.current_learning_iteration = it
+
+        # Log
+        runner.logger.log(
+            it=it,
+            start_it=start_it,
+            total_it=total_it,
+            collect_time=collect_time,
+            learn_time=learn_time,
+            loss_dict=loss_dict,
+            learning_rate=runner.alg.learning_rate,
+            action_std=runner.alg.get_policy().output_std,
+            rnd_weight=runner.alg.rnd.weight if getattr(agent_cfg.algorithm, "rnd_cfg", None) else None,
+        )
+
+        # Save model
+        if runner.logger.writer is not None and it % agent_cfg.save_interval == 0:
+            runner.save(os.path.join(runner.logger.log_dir, f"model_{it}.pt"))
+
+        # === 课程学习完成检查 ===
+        if curriculum_done_iteration is None:
+            try:
+                cm = gym_env.command_manager
+                lin_max = cm.get_term("base_velocity").cfg.ranges.lin_vel_x[1]
+                ang_max = cm.get_term("base_velocity").cfg.ranges.ang_vel_z[1]
+                if lin_max >= 1.0 and ang_max >= 1.0:
+                    curriculum_done_iteration = it
+                    new_total = curriculum_done_iteration * 2
+                    print(f"\n{'=' * 60}")
+                    print(f"[CURRICULUM] 课程学习达到上限 (lin={lin_max}, ang={ang_max})")
+                    print(f"[CURRICULUM] 完成轮数: {curriculum_done_iteration}")
+                    print(f"[CURRICULUM] 新 max_iterations: {new_total} (2×)")
+                    print(f"{'=' * 60}\n")
+                    total_it = new_total
+            except Exception:
+                pass  # 静默失败，不影响训练
+
+    # Final save
+    if runner.logger.writer is not None:
+        runner.save(os.path.join(runner.logger.log_dir, f"model_{runner.current_learning_iteration}.pt"))
+        runner.logger.stop_logging_writer()
+
+    # Final save
+    if runner.logger.writer is not None:
+        runner.save(os.path.join(runner.logger.log_dir, f"model_{runner.current_learning_iteration}.pt"))
+        runner.logger.stop_logging_writer()
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 

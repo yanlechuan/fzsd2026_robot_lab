@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Literal
 
 import torch
 
+import random
+
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
@@ -269,3 +271,6 @@ def reset_root_state_uniform(
         # set into the physics simulation
         asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=non_pit_env_ids)
         asset.write_root_velocity_to_sim(velocities, env_ids=non_pit_env_ids)
+
+
+

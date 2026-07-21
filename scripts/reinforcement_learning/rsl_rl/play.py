@@ -10,7 +10,24 @@
 
 """Launch Isaac Sim Simulator first."""
 
+# ------------------- 在文件顶部增加导入和版本检查 -------------------
+import importlib.metadata as metadata
+from packaging import version
+
+# 获取当前安装的 rsl-rl 版本
+try:
+    RSL_RL_VERSION = metadata.version("rsl-rl-lib")
+    print(f"[INFO] Detected rsl-rl version: {RSL_RL_VERSION}")
+except metadata.PackageNotFoundError:
+    RSL_RL_VERSION = "unknown"
+    print("[WARNING] rsl-rl-lib not found in metadata — assuming old version")
+
+IS_NEW_RSL_RL = version.parse(RSL_RL_VERSION) >= version.parse("4.0.0")
+
+
 import argparse
+import csv
+import math
 import sys
 
 from isaaclab.app import AppLauncher
@@ -38,6 +55,24 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--keyboard", action="store_true", default=False, help="Whether to use keyboard.")
+parser.add_argument(
+    "--dump_motor_csv",
+    action="store_true",
+    default=False,
+    help="Dump per-joint motor telemetry (vel/rpm/torque/power) to CSV during play.",
+)
+parser.add_argument(
+    "--dump_motor_interval",
+    type=int,
+    default=1,
+    help="Sampling interval (in control steps) for motor CSV dump.",
+)
+parser.add_argument(
+    "--dump_motor_env_id",
+    type=int,
+    default=0,
+    help="Environment index to dump motor telemetry from.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -61,6 +96,8 @@ import os
 import time
 
 import gymnasium as gym
+import onnx
+from onnx import external_data_helper
 import torch
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -76,7 +113,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx, handle_deprecated_rsl_rl_cfg
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -99,7 +136,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else 64
-
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, RSL_RL_VERSION)
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -191,7 +228,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # extract the neural network module
     # we do this in a try-except to maintain backwards compatibility.
-    try:
+    '''
+    try: #取消原本的判断逻辑，直接尝试新版的属性访问方式，如果失败再回退到旧版方式
         # version 2.3 onwards
         policy_nn = runner.alg.policy
     except AttributeError:
@@ -205,41 +243,150 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         normalizer = policy_nn.student_obs_normalizer
     else:
         normalizer = None
-
-    # export policy to onnx/jit
+    '''
+    '''# export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
     export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    '''
+    # export policy to onnx/jit
+    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    os.makedirs(export_model_dir, exist_ok=True)
+
+    print(f"[INFO] Exporting policy to: {export_model_dir}")
+
+    if IS_NEW_RSL_RL:
+    # 新版 rsl-rl (>=4.0.0) 推荐方式：直接用 runner 的导出方法
+        runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
+        runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
+    else:
+        # 旧版方式：手动提取 policy_nn + normalizer
+        try:
+            policy_nn = runner.alg.policy
+        except AttributeError:
+            policy_nn = runner.alg.actor_critic  # 更老的版本
+
+        # 提取 normalizer（兼容不同命名）
+        normalizer = None
+        if hasattr(policy_nn, "actor_obs_normalizer"):
+            normalizer = policy_nn.actor_obs_normalizer
+        elif hasattr(policy_nn, "student_obs_normalizer"):
+            normalizer = policy_nn.student_obs_normalizer
+        elif hasattr(runner, "obs_normalizer"):  # 某些版本放在 runner 上
+            normalizer = runner.obs_normalizer
+
+        from isaaclab_rl.rsl_rl import export_policy_as_jit, export_policy_as_onnx
+
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+
+    # Merge external ONNX tensor data back into one file when exporter writes `*.onnx.data`.
+    def _merge_onnx_external_data_if_present(onnx_path: str):
+        data_path = f"{onnx_path}.data"
+        if not os.path.exists(data_path):
+            return
+        try:
+            model = onnx.load_model(onnx_path, load_external_data=True)
+            external_data_helper.convert_model_from_external_data(model)
+            onnx.save_model(model, onnx_path, save_as_external_data=False)
+            if os.path.exists(data_path):
+                os.remove(data_path)
+            print(f"[INFO] Merged external tensor data into single ONNX: {onnx_path}")
+        except Exception as exc:
+            print(f"[WARNING] Failed to merge ONNX external data for {onnx_path}: {exc}")
+
+    _merge_onnx_external_data_if_present(os.path.join(export_model_dir, "policy.onnx"))
 
     dt = env.unwrapped.step_dt
 
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    motor_csv_file = None
+    motor_csv_writer = None
+    joint_names = None
+    dump_env_id = max(0, args_cli.dump_motor_env_id)
+    dump_interval = max(1, args_cli.dump_motor_interval)
+
+    if args_cli.dump_motor_csv:
+        motor_csv_path = os.path.join(log_dir, "motor_trace.csv")
+        motor_csv_file = open(motor_csv_path, "w", newline="")
+        motor_csv_writer = csv.writer(motor_csv_file)
+        motor_csv_writer.writerow(
+            [
+                "step",
+                "time_s",
+                "env_id",
+                "joint",
+                "joint_pos_rad",
+                "joint_vel_rad_s",
+                "joint_vel_rpm",
+                "applied_torque_nm",
+                "joint_power_w",
+            ]
+        )
+        print(f"[INFO] Motor telemetry CSV will be written to: {motor_csv_path}")
+
     # simulate environment
-    while simulation_app.is_running():
-        start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            actions = policy(obs)
-            # env stepping
-            obs, _, dones, _ = env.step(actions)
-            # reset recurrent states for episodes that have terminated
-            policy_nn.reset(dones)
-        if args_cli.video:
+    try:
+        while simulation_app.is_running():
+            start_time = time.time()
+            # run everything in inference mode
+            with torch.inference_mode():
+                # agent stepping
+                actions = policy(obs)
+                # env stepping
+                obs, _, dones, _ = env.step(actions)
+                # reset recurrent states for episodes that have terminated
+                # 策略重置（兼容新旧版本）
+                if IS_NEW_RSL_RL:
+                    policy.reset(dones)          # 新版直接用 policy.reset()
+                else:
+                    policy_nn.reset(dones)       # 旧版用 policy_nn.reset()
+
+                if args_cli.dump_motor_csv and (timestep % dump_interval == 0):
+                    robot = env.unwrapped.scene["robot"]
+                    num_envs = int(robot.data.joint_vel.shape[0])
+                    env_id = min(dump_env_id, max(0, num_envs - 1))
+                    if joint_names is None:
+                        joint_names = list(robot.data.joint_names)
+                    joint_pos = robot.data.joint_pos[env_id].detach().cpu()
+                    joint_vel = robot.data.joint_vel[env_id].detach().cpu()
+                    applied_torque = robot.data.applied_torque[env_id].detach().cpu()
+                    joint_vel_rpm = joint_vel * (60.0 / (2.0 * math.pi))
+                    joint_power = applied_torque * joint_vel
+
+                    for idx, joint_name in enumerate(joint_names):
+                        motor_csv_writer.writerow(
+                            [
+                                timestep,
+                                timestep * dt,
+                                env_id,
+                                joint_name,
+                                float(joint_pos[idx].item()),
+                                float(joint_vel[idx].item()),
+                                float(joint_vel_rpm[idx].item()),
+                                float(applied_torque[idx].item()),
+                                float(joint_power[idx].item()),
+                            ]
+                        )
+
             timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+            if args_cli.video:
+                # Exit the play loop after recording one video
+                if timestep == args_cli.video_length:
+                    break
 
-        if args_cli.keyboard:
-            camera_follow(env)
+            if args_cli.keyboard:
+                camera_follow(env)
 
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
+            # time delay for real-time evaluation
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        if motor_csv_file is not None:
+            motor_csv_file.close()
 
     # close the simulator
     env.close()

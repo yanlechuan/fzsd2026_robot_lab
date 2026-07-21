@@ -28,6 +28,11 @@
 **/.neptune/*
 docker/artifacts/
 *.tmp
+
+# Compressed archives (recreated by scripts/download)
+**/*.tar.xz
+**/*.tar.gz
+**/*.zip
 *.npz
 
 # Isaac-Sim packman

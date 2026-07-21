@@ -45,84 +45,84 @@ The table below lists all available environments:
 >
 > Discuss in [Github Discussion](https://github.com/fan-ziqi/robot_lab/discussions) or [Discord](http://www.robotsfan.com/dc_robot_lab).
 
-## My-Dog Robot
+## My-Dog 机器人
 
-This repository adds support for the **My-Dog** custom quadruped robot, including a physically-modeled calf spring mechanism, custom actuator network, and multiple training configurations.
+本仓库新增了对 **My-Dog** 自制四足机器人的支持，包括小腿弹簧的物理建模、自定义执行器网络以及多种训练场景配置。
 
-### Calf Spring Mechanism
+### 小腿弹簧机制
 
-My-Dog features passive springs on its calf joints (FR/FL/RR/RL calf). The spring exerts a position-dependent torque that approximates a linear relationship:
+My-Dog 的小腿关节（FR/FL/RR/RL calf）安装了被动弹簧。弹簧产生的力矩与关节角度近似呈线性关系：
 
-$$\tau_{\text{spring}} = k \cdot q + b$$
+$$\tau_{\text{弹簧}} = k \cdot q + b$$
 
-where $q$ is the joint angle (rad) and $\tau_{\text{spring}}$ is the spring torque (N·m).
+其中 $q$ 为关节角度（rad），$\tau_{\text{弹簧}}$ 为弹簧力矩（N·m）。
 
-#### Measurement Methodology
+#### 测量方法
 
-To characterize the spring effect, we collected motor telemetry data at near-static conditions (0.0078 rad/s, approximately 2.8 rad over 360 s), treating each angle as quasi-equilibrium:
+将小腿电机水平放置，让小腿在限位区间内以极低速度摆动（0.0078 rad/s，360 秒转动约 2.8 rad），近似认为每个角度都处于平衡状态：
 
-1. **Spring-ON run**: Collect ~20,000 data points with the spring installed
-2. **Spring-OFF run**: Collect ~20,000 data points with the spring removed
-3. **Processing pipeline**:
-   - Angle-interpolated difference between spring-ON and spring-OFF
-   - Low-speed filtering ($|\dot{q}| < 0.05$ rad/s)
-   - Binned averaging by angle (bin width 0.02 rad)
-   - Linear and trigonometric fitting
+1. **有弹簧实验**：安装弹簧，采集约 20,000 行数据
+2. **无弹簧实验**：拆卸弹簧，采集约 20,000 行数据
+3. **数据处理流程**：
+   - 对有弹簧/无弹簧数据做角度插值差分
+   - 低速筛选（$|\dot{q}| < 0.05$ rad/s）
+   - 按角度分箱平均（箱宽 0.02 rad）
+   - 同时做线性和三角函数拟合
 
-#### Fitted Spring Coefficients
+#### 弹簧拟合系数
 
-| Joint        | $k$ (N·m/rad) | $b$ (N·m) | $R^2$   |
-|-------------|---------------|-----------|---------|
-| FR_calf     | 1.026         | −1.967    | 0.925   |
-| FL_calf     | 1.270         | +2.476    | 0.957   |
-| RR_calf     | 1.078         | −2.154    | 0.926   |
-| RL_calf     | 1.113         | +2.225    | 0.961   |
+| 关节       | $k$ (N·m/rad) | $b$ (N·m) | $R^2$   |
+|-----------|---------------|-----------|---------|
+| FR_calf   | 1.026         | −1.967    | 0.925   |
+| FL_calf   | 1.270         | +2.476    | 0.957   |
+| RR_calf   | 1.078         | −2.154    | 0.926   |
+| RL_calf   | 1.113         | +2.225    | 0.961   |
 
-> **Note**: The sign of $b$ differs between left/right leg pairs due to the opposing joint angle conventions.
+> **说明**：$b$ 的符号在左右腿间相反，是因为关节角度正方向的定义左右对称。
 
-#### Actuator Network Integration
+#### 执行器网络集成
 
-The spring model is integrated into `MyDogSpringActuatorNetMLP` (`source/robot_lab/robot_lab/assets/my_dog.py`), which extends Isaac Lab's `ActuatorNetMLP`:
+弹簧模型已集成到 `MyDogSpringActuatorNetMLP`（位于 `source/robot_lab/robot_lab/assets/my_dog.py`），该类继承自 Isaac Lab 的 `ActuatorNetMLP`：
 
 ```python
-# Spring torque is added to the network output
+# 在网络输出的基础上叠加弹簧力矩
 spring_effort = k * joint_pos + b
 computed_effort = network_output + spring_effort
 ```
 
-The spring compensation can be toggled via the `enable_calf_spring` flag in `MyDogActuatorNetMLPCfg`.
+可通过 `MyDogActuatorNetMLPCfg` 中的 `enable_calf_spring` 开关控制是否启用弹簧补偿。
 
-#### Custom Torque-Speed Envelope
+#### 自定义扭矩-转速包络
 
-In addition to the spring model, a custom quadratic torque-speed envelope (`QuadraticTorqueCurveDCMotor`) is fitted from measured motor data to accurately model the actuator's physical limits:
+除弹簧模型外，还基于实测电机数据拟合了二次扭矩-转速包络（`QuadraticTorqueCurveDCMotor`），用于精确建模执行器的物理极限：
 
 $$T_q(n) = a n^2 + b n + c$$
 
-with $a = -0.000341$, $b = 0.064566$, $c = 13.605$ (N·m), peak torque at $n_{\text{peak}} \approx 94.6$ rpm.
+其中 $a = -0.000341$，$b = 0.064566$，$c = 13.605$（N·m），峰值扭矩点 $n_{\text{峰值}} \approx 94.6$ rpm。
 
-#### Verification Tool
+#### 验证工具
 
-Use `scripts/tools/verify_spring_effect.py` to compare spring-ON vs spring-OFF telemetry:
+使用 `scripts/tools/verify_spring_effect.py` 对比有弹簧/无弹簧的电机遥测数据：
 
 ```bash
 python scripts/tools/verify_spring_effect.py on.csv off.csv --speed-threshold 0.1
 ```
 
-### Training Configurations
+### 训练配置
 
-My-Dog supports multiple training scenarios under `config/quadruped/my_dog/`:
+My-Dog 在 `config/quadruped/my_dog/` 下支持以下训练场景：
 
-| Config | Description |
-|--------|-------------|
-| `flat_env_cfg.py` | Flat terrain locomotion |
-| `rough_env_cfg.py` | Rough terrain locomotion |
-| `平地1.py` | Flat ground variant 1 |
-| `高杆.py` | High-bar obstacle crossing |
-| `避障配置.py` | Obstacle avoidance |
+| 配置文件 | 说明 |
+|---------|------|
+| `flat_env_cfg.py` | 平地运动 |
+| `rough_env_cfg.py` | 崎岖地形运动 |
+| `平地1.py` | 平地变体 1 |
+| `高杆.py` | 高杆越障 |
+| `避障配置.py` | 避障 |
 
-### Available Rewards
+### 可用奖励
 
-The reward function (`rewards.py`) has been extended with additional terms optimized for My-Dog. See `可用奖励（仅依赖IMU电机）.md` for a categorized list of IMU/motor-only rewards that are deployable on real hardware without external sensors.
+奖励函数（`rewards.py`）针对 My-Dog 进行了扩展。详见 `可用奖励（仅依赖IMU电机）.md`，其中分类列出了仅依赖 IMU 和电机数据即可在真实机器人上部署的奖励项。
 
 ## Version Dependency
 

@@ -31,6 +31,28 @@ docker/artifacts/
 *.tmp
 *.npz
 
+# Original robot data from fan-ziqi/robot_lab (download via scripts/)
+source/robot_lab/data/Robots/unitree/
+source/robot_lab/data/Robots/deeprobotics/
+source/robot_lab/data/Robots/fftai/
+source/robot_lab/data/Robots/ddt/
+source/robot_lab/data/Robots/magiclab/
+source/robot_lab/data/Robots/roboparty/
+source/robot_lab/data/Robots/robotera/
+source/robot_lab/data/Robots/openloong/
+source/robot_lab/data/Robots/booster/
+source/robot_lab/data/Robots/zsibot/
+
+# Original actuator nets (exclude upstream, keep my_dog)
+source/robot_lab/data/ActuatorNets/unitree/
+source/robot_lab/data/ActuatorNets/deeprobotics/
+source/robot_lab/data/ActuatorNets/fftai/
+source/robot_lab/data/ActuatorNets/magiclab/
+source/robot_lab/data/ActuatorNets/zsibot/
+
+# Robot meshes/assets from upstream
+source/robot_lab/data/Assets/
+
 # Isaac-Sim packman
 _isaac_sim*
 _repo
